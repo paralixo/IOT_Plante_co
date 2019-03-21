@@ -9,6 +9,8 @@ static DigitalOut led1(LED1);
 
 // capteur humidite
 static AnalogIn soil_moisture(ADC_IN1);
+static float air_value = 0.000244 * 3.3;
+static float water_value = 0.748962 * 3.3;
 
 // Capteur temperature
 I2C i2c(I2C1_SDA, I2C1_SCL);
@@ -18,7 +20,6 @@ uint8_t lm75_adress = 0x48 << 1;
 NetworkInterface *net;
 
 int arrivedcount = 0;
-const char* topic = "paralixo/feeds/Humidité";
 
 /* Printf the message received and its configuration */
 void messageArrived(MQTT::MessageData& md)
@@ -27,6 +28,45 @@ void messageArrived(MQTT::MessageData& md)
     printf("Message arrived: qos %d, retained %d, dup %d, packetid %d\r\n", message.qos, message.retained, message.dup, message.id);
     printf("Payload %.*s\r\n", message.payloadlen, (char*)message.payload);
     ++arrivedcount;
+}
+
+void sendData(MQTT::Client<MQTTNetwork, Countdown>& client, char* topic, float humidity_percent)
+{
+	printf("On envoie '" + topic + "' : \n");
+	topic = "paralixo/feeds/" + topic;
+
+	int rc = 0;
+	if ((rc = client.subscribe(topic, MQTT::QOS2, messageArrived)) != 0)
+		printf("rc from MQTT subscribe is %d\r\n", rc);
+
+	MQTT::Message message;
+	char buf[100];
+	sprintf(buf, "%f", humidity_percent);
+	message.qos = MQTT::QOS0;
+	message.retained = false;
+	message.dup = false;
+	message.payload = (void*)buf;
+	message.payloadlen = strlen(buf)+1;
+
+	rc = client.publish(topic, message);
+	while (arrivedcount < 1)
+		client.yield(100);
+
+	arrivedcount = 0;
+}
+
+void float getHumidity()
+{
+	return ((soil_moisture.read() * 3.3) - air_value) * 100.0 / (water_value - air_value);
+}
+
+void float getTemperature()
+{
+	char cmd[2];
+	cmd[0] = 0x00; // adresse registre temperature
+	i2c.write(lm75_adress, cmd, 1);
+	i2c.read(lm75_adress, cmd, 2);
+	return ((cmd[0] << 8 | cmd[1] ) >> 7) * 0.5;
 }
 
 // MQTT demo
@@ -43,43 +83,34 @@ int main() {
 
 
     // humidity
-    float air_value = 0.000244 * 3.3;
-    float water_value = 0.748962 * 3.3;
-	float humidity_percent = ((soil_moisture.read() * 3.3) - air_value) * 100.0 / (water_value - air_value);
+	float humidity_percent = getHumidity();
 	printf("Soil Moisture = %f % \n\r", humidity_percent);
 
     // temperature
-	char cmd[2];
-	cmd[0] = 0x00; // adresse registre temperature
-	i2c.write(lm75_adress, cmd, 1);
-	i2c.read(lm75_adress, cmd, 2);
-	float temperature = ((cmd[0] << 8 | cmd[1] ) >> 7) * 0.5;
+	float temperature = getTemperature();
 	printf("Temperature = %f °C\r\n", temperature);
 
 
 
-    printf("Starting MQTT\n");
+    printf("Starting MQTT connection...\n");
 
-    // Get default Network interface (6LowPAN)
+    // Get default Network interface (6LowPAN) & Connect 6LowPAN interface
     net = NetworkInterface::get_default_instance();
     if (!net) {
         printf("Error! No network inteface found.\n");
         return 0;
     }
-    // Connect 6LowPAN interface
     result = net->connect();
     if (result != 0) {
         printf("Error! net->connect() returned: %d\n", result);
         return result;
     }
 
-    // Build the socket that will be used for MQTT
+    // Build the socket that will be used for MQTT & Declare a MQTT Client
     MQTTNetwork mqttNetwork(net);
-    // Declare a MQTT Client
     MQTT::Client<MQTTNetwork, Countdown> client(mqttNetwork);
 
     // Connect the socket to the MQTT Broker
-    // const char* hostname = "fd9f:590a:b158:ffff:ffff::c0a8:0103";
     const char* hostname = "io.adafruit.com";
 	uint16_t port = 1883;
     printf("Connecting to %s:%d\r\n", hostname, port);
@@ -96,51 +127,12 @@ int main() {
     if ((rc = client.connect(data)) != 0)
         printf("rc from MQTT connect is %d\r\n", rc);
 
+    sendData(client, "Humidité", humidity_percent);
+	sendData(client, "Temperature", temperature);
 
-    // premiere info
-    printf("On envoie l'humidité\n");
-    if ((rc = client.subscribe(topic, MQTT::QOS2, messageArrived)) != 0)
-        printf("rc from MQTT subscribe is %d\r\n", rc);
-
-    MQTT::Message message;
-    char buf[100];
-    sprintf(buf, "%f", humidity_percent);
-    message.qos = MQTT::QOS0;
-    message.retained = false;
-    message.dup = false;
-    message.payload = (void*)buf;
-    message.payloadlen = strlen(buf)+1;
-
-    rc = client.publish(topic, message);
-	while (arrivedcount < 1)
-		client.yield(100);
-
-	arrivedcount = 0;
-
-	// deuxieme info
-	printf("On envoie la température\n");
-	topic = "paralixo/feeds/Temperature";
-	if ((rc = client.subscribe(topic, MQTT::QOS2, messageArrived)) != 0)
-		printf("rc from MQTT subscribe is %d\r\n", rc);
-
-	sprintf(buf, "%f", temperature);
-	message.qos = MQTT::QOS0;
-	message.retained = false;
-	message.dup = false;
-	message.payload = (void*)buf;
-	message.payloadlen = strlen(buf)+1;
-
-	rc = client.publish(topic, message);
-	while (arrivedcount < 1)
-		client.yield(100);
-
-
-
-    // Disconnect client and socket
+    // Disconnect client and socket & Bring down the 6LowPAN interface
     client.disconnect();
     mqttNetwork.disconnect();
-
-    // Bring down the 6LowPAN interface
     net->disconnect();
-    printf("Done\n");
+    printf("...MQTT connection ended\n");
 }

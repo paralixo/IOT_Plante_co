@@ -9,7 +9,7 @@ static DigitalOut led1(LED1);
 
 // capteur humidite
 static AnalogIn soil_moisture(ADC_IN1);
-static float air_value = 0.000244 * 3.3;
+static float air_value = 0.000000 * 3.3; // valeurs negative si air value != 0
 static float water_value = 0.748962 * 3.3;
 
 // Capteur temperature
@@ -19,29 +19,31 @@ uint8_t lm75_adress = 0x48 << 1;
 // Network interface
 NetworkInterface *net;
 
-int arrivedcount = 0;
-
 /* Printf the message received and its configuration */
 void messageArrived(MQTT::MessageData& md)
 {
     MQTT::Message &message = md.message;
     printf("Message arrived: qos %d, retained %d, dup %d, packetid %d\r\n", message.qos, message.retained, message.dup, message.id);
-    printf("Payload %.*s\r\n", message.payloadlen, (char*)message.payload);
-    ++arrivedcount;
+    printf("Payload %.*s \r\n\n", message.payloadlen, (char*)message.payload);
+
+    if (strcmp((const char *)md.message.payload, "ON") >= 0) {
+    	led1 = true;
+    }
+    else if (strcmp((const char *)md.message.payload, "OFF") >= 0) {
+		led1 = false;
+	}
 }
 
-void sendData(MQTT::Client<MQTTNetwork, Countdown>& client, char* topic, float humidity_percent)
+void sendData(MQTT::Client<MQTTNetwork, Countdown>& client, char* topic_nom, float value)
 {
-	printf("On envoie '" + topic + "' : \n");
-	topic = "paralixo/feeds/" + topic;
-
+	char topic[100];
+	sprintf(topic, "paralixo/feeds/%s", topic_nom);
+	printf("On envoie %f à %s : \r\n", value, topic);
 	int rc = 0;
-	if ((rc = client.subscribe(topic, MQTT::QOS2, messageArrived)) != 0)
-		printf("rc from MQTT subscribe is %d\r\n", rc);
 
 	MQTT::Message message;
 	char buf[100];
-	sprintf(buf, "%f", humidity_percent);
+	sprintf(buf, "%f", value);
 	message.qos = MQTT::QOS0;
 	message.retained = false;
 	message.dup = false;
@@ -49,18 +51,14 @@ void sendData(MQTT::Client<MQTTNetwork, Countdown>& client, char* topic, float h
 	message.payloadlen = strlen(buf)+1;
 
 	rc = client.publish(topic, message);
-	while (arrivedcount < 1)
-		client.yield(100);
-
-	arrivedcount = 0;
 }
 
-void float getHumidity()
+float getHumidity()
 {
 	return ((soil_moisture.read() * 3.3) - air_value) * 100.0 / (water_value - air_value);
 }
 
-void float getTemperature()
+float getTemperature()
 {
 	char cmd[2];
 	cmd[0] = 0x00; // adresse registre temperature
@@ -79,18 +77,6 @@ int main() {
         { 0xfd, 0x9f, 0x59, 0x0a, 0xb1, 0x58, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x01 }
     };
     nsapi_dns_add_server(new_dns);
-
-
-
-    // humidity
-	float humidity_percent = getHumidity();
-	printf("Soil Moisture = %f % \n\r", humidity_percent);
-
-    // temperature
-	float temperature = getTemperature();
-	printf("Temperature = %f °C\r\n", temperature);
-
-
 
     printf("Starting MQTT connection...\n");
 
@@ -124,11 +110,29 @@ int main() {
     data.clientID.cstring = "mbed-sample";
     data.username.cstring = "paralixo";
     data.password.cstring = "3b3071da0b4545d7b66b80a72b9fd8fe";
+    data.keepAliveInterval = 100;
     if ((rc = client.connect(data)) != 0)
         printf("rc from MQTT connect is %d\r\n", rc);
 
-    sendData(client, "Humidité", humidity_percent);
-	sendData(client, "Temperature", temperature);
+    // Subs
+    if ((rc = client.subscribe("paralixo/feeds/Led", MQTT::QOS2, messageArrived)) != 0)
+    	printf("rc from MQTT subscribe is %d\r\n", rc);
+    if ((rc = client.subscribe("paralixo/feeds/Humidité", MQTT::QOS2, messageArrived)) != 0)
+        	printf("rc from MQTT subscribe is %d\r\n", rc);
+    if ((rc = client.subscribe("paralixo/feeds/Temperature", MQTT::QOS2, messageArrived)) != 0)
+        	printf("rc from MQTT subscribe is %d\r\n", rc);
+
+    // main while
+    while (true) {
+		float humidity_percent = getHumidity();
+		float temperature = getTemperature();
+
+		sendData(client, "Humidité", humidity_percent);
+		sendData(client, "Temperature", temperature);
+
+		client.yield(100);
+		wait(5);
+    }
 
     // Disconnect client and socket & Bring down the 6LowPAN interface
     client.disconnect();

@@ -1,3 +1,7 @@
+# Lien du dashboard adafruit
+
+https://io.adafruit.com/paralixo/dashboards/projet-iot-plante-connecte
+
 # Hello World
 
 Simple Mbed OS app
